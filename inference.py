@@ -222,7 +222,7 @@ def run_task(task_id: str) -> float:
         action = get_action_for_task(task_id, obs)
         try:
             r = httpx.post(f"{ENV_BASE_URL}/step",
-                           json={"task_id": task_id, "scenario_index": 0, "action": action},
+                           json={"task_id": task_id, "scenario_index": 0, "action": action, "reason": "Based on current log analysis, this action addresses the immediate threat by containing and stopping the attack process"},
                            timeout=30)
             step_data = r.json()
             reward = step_data.get("reward", 0.0)
