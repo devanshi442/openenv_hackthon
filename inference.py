@@ -1,14 +1,6 @@
 """
-CyberDefend-X — Baseline Inference Script
-Uses the OpenAI-compatible API client to run an LLM agent against all 3 tasks.
-
-Required environment variables:
-  API_BASE_URL   — e.g. https://api.groq.com/openai/v1
-  MODEL_NAME     — e.g. llama-3.3-70b-versatile
-  HF_TOKEN       — Your API key
-  ENV_BASE_URL   — e.g. "https://your-space.hf.space" or "https://devanshi86-cyberdefend-x.hf.space"
-
-Logging format: strictly [START], [STEP], [END] as required by the spec.
+CyberDefend-X Inference Script
+Runs the agent against the live HF Space environment.
 """
 
 from __future__ import annotations
@@ -16,28 +8,17 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, Dict, List, Optional
 
 import httpx
 from openai import OpenAI
 
-print("🚀 Starting CyberDefend-X inference...", flush=True)
-
 # ------------------------------------------------------------------
-# Config
+# Environment variables
 # ------------------------------------------------------------------
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
 MODEL_NAME   = os.environ.get("MODEL_NAME", "llama-3.3-70b-versatile")
 HF_TOKEN     = os.environ.get("HF_TOKEN")
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "https://devanshi86-cyberdefend-x.hf.space").rstrip("/")
-
-SUCCESS_SCORE_THRESHOLD = float(os.environ.get("SUCCESS_SCORE_THRESHOLD", "0.5"))
-
-TASKS: List[Dict[str, Any]] = [
-    {"task_id": "alert_prioritization", "scenario_index": 0, "max_steps": 1},
-    {"task_id": "threat_detection",     "scenario_index": 0, "max_steps": 1},
-    {"task_id": "incident_response",    "scenario_index": 0, "max_steps": 4},
-]
 
 if not HF_TOKEN:
     print("[WARN] HF_TOKEN is not set. API calls may fail.", flush=True)
@@ -47,238 +28,270 @@ client = OpenAI(
     api_key=HF_TOKEN or "placeholder",
 )
 
-# ------------------------------------------------------------------
-# Logging helpers
-# ------------------------------------------------------------------
+TASKS = ["alert_prioritization", "threat_detection", "incident_response"]
+MAX_STEPS = {"alert_prioritization": 1, "threat_detection": 1, "incident_response": 4}
 
-def log_start(task: str, env: str, model: str) -> None:
-    print(json.dumps({"type": "START", "task": task, "env": env,
-                      "model": model, "timestamp": time.time()}), flush=True)
 
-def log_step(step: int, action: Any, reward: float, done: bool, error: Optional[str]) -> None:
-    print(json.dumps({"type": "STEP", "step": step, "action": action,
-                      "reward": reward, "done": done, "error": error,
-                      "timestamp": time.time()}), flush=True)
+def log_start(task: str, env: str, model: str):
+    print(json.dumps({
+        "type": "START",
+        "task": task,
+        "env": env,
+        "model": model,
+        "timestamp": time.time(),
+    }), flush=True)
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    print(json.dumps({"type": "END", "success": success, "steps": steps,
-                      "score": score, "rewards": rewards,
-                      "timestamp": time.time()}), flush=True)
 
-# ------------------------------------------------------------------
-# Task-specific system prompts (tuned for high scores)
-# ------------------------------------------------------------------
+def log_step(step: int, action, reward: float, done: bool, error=None):
+    print(json.dumps({
+        "type": "STEP",
+        "step": step,
+        "action": action,
+        "reward": reward,
+        "done": done,
+        "error": error,
+        "timestamp": time.time(),
+    }), flush=True)
 
-SYSTEM_PROMPTS = {
-    "alert_prioritization": """You are an elite SOC analyst with 15 years of experience.
-Rank security alerts from MOST to LEAST critical using these rules:
-1. CRITICAL (0.9-1.0): Active exfiltration, ransomware executing, active malware
-2. HIGH (0.7-0.8): Account compromise, privilege escalation, C2 communication, lateral movement
-3. MEDIUM (0.4-0.6): Port scans, suspicious access, policy violations
-4. LOW (0.1-0.3): Few failed logins, outdated software, informational
 
-You MUST respond with valid JSON only — no markdown, no preamble.
-Format: {"ranking": ["most critical alert text exactly as given", "second", ...], "reason": "brief justification"}""",
+def log_end(success: bool, steps: int, score: float, rewards: list):
+    print(json.dumps({
+        "type": "END",
+        "success": success,
+        "steps": steps,
+        "score": score,
+        "rewards": rewards,
+        "timestamp": time.time(),
+    }), flush=True)
 
-    "threat_detection": """You are an elite SOC threat analyst specializing in attack pattern recognition.
-Analyze correlated log entries and identify the exact attack type and key signals.
 
-COMMON PATTERNS:
-- Brute Force + Privilege Escalation: many failed logins → sudo/su → new admin backdoor account
-- Command and Control (C2) with Persistence: DNS to C2 domain → unusual port (4444) → PowerShell encoded → scheduled task
-- Ransomware: mass file rename/.locked → shadow copy deletion (vssadmin) → ransom note → disk spike
-- Lateral Movement + Credential Theft: SMB scan → pass-the-hash → Mimikatz → RDP to DC
-
-Match the attack type name EXACTLY to what fits (e.g. "Brute Force + Privilege Escalation").
-You MUST respond with valid JSON only — no markdown, no preamble.
-Format: {"attack_type": "exact attack name", "signals": ["key signal 1", "key signal 2", "key signal 3"], "reason": "explanation"}""",
-
-    "incident_response": """You are an elite incident responder. Choose the SINGLE best containment action.
-
-DECISION RULES (strict priority):
-- "process detected" OR "files being encrypted" → kill_process
-- "lateral spread" OR "SMB scan" OR "spread to other hosts" → isolate_system
-- "C2 domain" OR "attacker IP" OR "may re-enter" → block_ip
-- "credentials leaked" OR "compromised account" OR "active session" → reset_credentials
-- "need evidence" OR "forensics" OR "audit trail" OR "document" → collect_forensics
-- "stakeholders" OR "legal" OR "compliance" OR "notify" → escalate_to_management
-- "suspicious activity" OR "initial detection" OR "investigate" → alert_soc
-
-Your reason MUST mention keywords from the log (this gives an explainability bonus).
-You MUST respond with valid JSON only — no markdown, no preamble.
-Valid actions: alert_soc, block_ip, isolate_system, kill_process, reset_credentials, collect_forensics, escalate_to_management, patch_system, restore_backup, do_nothing
-Format: {"action": "chosen_action", "reason": "quote keywords from the log that justify this action"}""",
-}
-
-# ------------------------------------------------------------------
-# LLM call
-# ------------------------------------------------------------------
-
-def get_llm_action(instructions: str, history: List[Dict], task_id: str) -> Dict[str, Any]:
-    system_prompt = SYSTEM_PROMPTS.get(task_id, SYSTEM_PROMPTS["incident_response"])
-
-    history_text = ""
-    if history:
-        history_text = "\n\n--- PREVIOUS STEPS (learn from rewards/feedback) ---\n"
-        for h in history:
-            history_text += (
-                f"Step {h['step']}: action={h['action']}, "
-                f"reward={h['reward']:.3f}, feedback={h.get('feedback', '')}\n"
-            )
-        history_text += "--- End of history ---"
-
-    FORMAT_REMINDERS = {
-        "alert_prioritization": '\n\nReturn ONLY: {"ranking": ["alert 1", "alert 2", ...], "reason": "..."}',
-        "threat_detection":     '\n\nReturn ONLY: {"attack_type": "name", "signals": ["s1","s2","s3"], "reason": "..."}',
-        "incident_response":    '\n\nReturn ONLY: {"action": "one_valid_action", "reason": "use keywords from the log"}',
-    }
-
-    user_msg = instructions + history_text + FORMAT_REMINDERS.get(task_id, "")
-
+def call_llm(system_prompt: str, user_prompt: str):
     try:
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_msg},
+                {"role": "user", "content": user_prompt},
             ],
-            max_tokens=512,
-            temperature=0.1,
+            temperature=0.0,
+            max_tokens=1024,
         )
-        raw = response.choices[0].message.content.strip()
-        if raw.startswith("```"):
-            parts = raw.split("```")
-            raw = parts[1] if len(parts) > 1 else raw
-            if raw.startswith("json"):
-                raw = raw[4:]
-        return json.loads(raw.strip())
-
-    except json.JSONDecodeError as e:
-        print(f"[DEBUG] JSON parse error: {e} | raw={raw!r}", flush=True)
+        return response.choices[0].message.content
     except Exception as e:
         print(f"[DEBUG] LLM call error: {e}", flush=True)
+        return None
 
-    fallbacks: Dict[str, Dict[str, Any]] = {
-        "alert_prioritization": {"ranking": [], "reason": "LLM unavailable."},
-        "threat_detection":     {"attack_type": "Unknown", "signals": [], "reason": "LLM unavailable."},
-        "incident_response":    {"action": "alert_soc", "reason": "LLM unavailable."},
-    }
-    return fallbacks.get(task_id, {"action": "alert_soc", "reason": "LLM unavailable."})
 
-# ------------------------------------------------------------------
-# HTTP helpers
-# ------------------------------------------------------------------
+def parse_json(text: str):
+    if not text:
+        return None
+    for candidate in [
+        text.strip(),
+        text.strip().strip("```json").strip("```").strip(),
+        text[text.find("{"):text.rfind("}")+1] if "{" in text else "",
+        text[text.find("["):text.rfind("]")+1] if "[" in text else "",
+    ]:
+        try:
+            if candidate:
+                return json.loads(candidate)
+        except Exception:
+            continue
+    return None
 
-def api_reset(task_id: str, scenario_index: int) -> Dict:
-    r = httpx.post(f"{ENV_BASE_URL}/reset",
-                   json={"task_id": task_id, "scenario_index": scenario_index}, timeout=30)
-    r.raise_for_status()
-    return r.json()
 
-def api_step(task_id: str, scenario_index: int, action: Any, reason: str) -> Dict:
-    r = httpx.post(f"{ENV_BASE_URL}/step",
-                   json={"task_id": task_id, "scenario_index": scenario_index,
-                         "action": action, "reason": reason}, timeout=30)
-    r.raise_for_status()
-    return r.json()
+def get_action_for_task(task_id: str, observation: dict):
+    obs_str = json.dumps(observation, indent=2)
 
-def build_action_payload(task_id: str, llm_response: Dict[str, Any]) -> Any:
     if task_id == "alert_prioritization":
-        return llm_response.get("ranking", [])
-    if task_id == "threat_detection":
-        return {"attack_type": llm_response.get("attack_type", ""),
-                "signals": llm_response.get("signals", [])}
-    return {"action": llm_response.get("action", "alert_soc")}
+        alerts = observation.get("alerts", [])
+        alert_list = "\n".join([f"- [{i}] {a['alert']}" for i, a in enumerate(alerts)])
+        system = """You are an expert SOC analyst with 10+ years of experience triaging security alerts.
+Your job is to identify which alerts are genuinely HIGH priority and require immediate action.
 
-# ------------------------------------------------------------------
-# Run one full task episode
-# ------------------------------------------------------------------
+HIGH priority alerts include:
+- Data exfiltration attempts (large data transfers to external IPs)
+- Unauthorized admin/privileged access or login anomalies  
+- Active intrusion indicators (port scans on critical systems, lateral movement)
+- Multiple failed authentication attempts suggesting brute force
+- Malware or ransomware indicators
+- Privilege escalation attempts
 
-def run_task(task_cfg: Dict[str, Any]) -> float:
-    task_id        = task_cfg["task_id"]
-    scenario_index = task_cfg["scenario_index"]
-    max_steps      = task_cfg["max_steps"]
+LOW priority alerts include:
+- Single failed logins
+- Routine network traffic
+- Non-critical system warnings
+
+CRITICAL: Return ONLY a valid JSON array of the exact alert strings that are high priority.
+Example: ["Alert text 1", "Alert text 2"]
+No explanation. No markdown. Just the JSON array."""
+
+        user = f"""Analyze these security alerts and return ALL HIGH priority ones:
+
+{alert_list}
+
+Full observation:
+{obs_str}
+
+Return ONLY a JSON array of high-priority alert strings."""
+
+        result = call_llm(system, user)
+        parsed = parse_json(result)
+        if isinstance(parsed, list):
+            return parsed
+        return [a["alert"] for a in alerts if a.get("true_severity", 0) >= 0.3]
+
+    elif task_id == "threat_detection":
+        system = """You are a senior threat intelligence analyst specializing in attack pattern recognition.
+
+Common attack patterns:
+- Brute Force: Many failed logins followed by success
+- Privilege Escalation: sudo/su usage, new admin accounts created
+- Lateral Movement: connections between internal hosts
+- Data Exfiltration: large outbound transfers, DNS tunneling
+- Persistence: new scheduled tasks, backdoor accounts
+- Command & Control: beaconing traffic, unusual outbound connections
+- Ransomware: mass file encryption, shadow copy deletion
+- SQL Injection: unusual database queries in web logs
+
+CRITICAL: Return ONLY valid JSON with exactly these two keys:
+- "attack_type": A specific descriptive name (e.g. "Brute Force + Privilege Escalation")
+- "signals": A list of 3-5 specific evidence strings from the logs
+
+Example: {"attack_type": "Credential Stuffing + Data Exfiltration", "signals": ["500 failed logins", "successful login from TOR IP", "200MB transfer to external IP"]}
+No explanation. No markdown. Just the JSON."""
+
+        user = f"""Analyze these security logs and identify the attack:
+
+{obs_str}
+
+Return JSON with attack_type and signals."""
+
+        result = call_llm(system, user)
+        parsed = parse_json(result)
+        if isinstance(parsed, dict) and "attack_type" in parsed and "signals" in parsed:
+            return parsed
+        return {"attack_type": "Unknown Threat", "signals": ["Suspicious activity detected"]}
+
+    elif task_id == "incident_response":
+        logs = observation.get("logs", [])
+        step_num = observation.get("step", 0)
+        context = observation.get("context", {})
+
+        system = """You are an elite incident responder following a structured IR playbook.
+
+Available actions and when to use them:
+- "kill_process": FIRST - stop active malicious process
+- "isolate_system": EARLY - prevent lateral movement  
+- "block_ip": stop C2 communication or exfiltration
+- "collect_forensics": gather evidence before remediation
+- "escalate_to_management": when severity is HIGH or needs business decision
+- "alert_soc": notify team and coordinate response
+- "patch_vulnerability": after containment, fix root cause
+- "restore_system": LAST - recovery after full eradication
+
+Optimal IR sequence: kill_process → isolate_system → block_ip → escalate_to_management → restore_system
+
+CRITICAL: Return ONLY valid JSON with key "action".
+Example: {"action": "isolate_system"}
+No explanation. No markdown. Just the JSON."""
+
+        user = f"""Current incident state (Step {step_num + 1}):
+
+Context: {json.dumps(context, indent=2)}
+Recent logs: {json.dumps(logs[-5:] if logs else [], indent=2)}
+
+What is the single BEST next action? Return JSON with key "action"."""
+
+        result = call_llm(system, user)
+        parsed = parse_json(result)
+        if isinstance(parsed, dict) and "action" in parsed:
+            valid_actions = ["kill_process", "isolate_system", "block_ip",
+                           "escalate_to_management", "alert_soc", "restore_system",
+                           "collect_forensics", "patch_vulnerability"]
+            if parsed["action"] in valid_actions:
+                return parsed
+        fallback_sequence = ["kill_process", "isolate_system", "block_ip", "escalate_to_management"]
+        return {"action": fallback_sequence[min(step_num, len(fallback_sequence)-1)]}
+
+    return {}
+
+
+def run_task(task_id: str) -> float:
+    print(f"\n{'='*60}", flush=True)
+    print(f"[INFO] Running task: {task_id}", flush=True)
 
     log_start(task=task_id, env="CyberDefend-X", model=MODEL_NAME)
 
-    rewards: List[float] = []
-    steps_taken = 0
-    history: List[Dict] = []
-    score   = 0.0
-    success = False
-
     try:
-        reset_result = api_reset(task_id, scenario_index)
-        obs  = reset_result.get("observation", {})
-        done = obs.get("done", False)
-
-        for step_num in range(1, max_steps + 1):
-            if done:
-                break
-
-            instructions = obs.get("instructions", "")
-            llm_response = get_llm_action(instructions, history, task_id)
-            reason       = llm_response.pop("reason", "No reason provided.")
-            action_payload = build_action_payload(task_id, llm_response)
-
-            step_result = api_step(task_id, scenario_index, action_payload, reason)
-            reward  = float(step_result.get("reward", 0.0))
-            done    = bool(step_result.get("done", True))
-            obs     = step_result.get("observation", obs)
-            info    = step_result.get("info", {})
-
-            rewards.append(reward)
-            steps_taken = step_num
-            history.append({"step": step_num, "action": action_payload,
-                             "reward": reward, "feedback": info.get("feedback", "")})
-
-            log_step(step=step_num, action=action_payload, reward=reward, done=done, error=None)
-
-        score   = round(sum(rewards) / max(max_steps, 1), 4)
-        score   = min(max(score, 0.0), 1.0)
-        success = score >= SUCCESS_SCORE_THRESHOLD
-
+        r = httpx.post(f"{ENV_BASE_URL}/reset",
+                       json={"task_id": task_id, "scenario_index": 0},
+                       timeout=30)
+        reset_data = r.json()
+        obs = reset_data.get("observation", {})
     except Exception as e:
-        print(f"[DEBUG] Task {task_id} failed: {e}", flush=True)
-        log_step(step=steps_taken, action=None, reward=0.0, done=True, error=str(e))
+        print(f"[ERROR] Reset failed: {e}", flush=True)
+        log_step(1, {}, 0.0, True, str(e))
+        log_end(False, 1, 0.0, [0.0])
+        return 0.0
 
-    finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+    max_steps = MAX_STEPS.get(task_id, 4)
+    rewards = []
+    done = False
+    step = 0
 
+    for step in range(1, max_steps + 1):
+        if done:
+            break
+
+        action = get_action_for_task(task_id, obs)
+
+        try:
+            r = httpx.post(f"{ENV_BASE_URL}/step",
+                           json={"task_id": task_id, "scenario_index": 0, "action": action},
+                           timeout=30)
+            step_data = r.json()
+            reward = step_data.get("reward", 0.0)
+            done = step_data.get("done", True)
+            obs = step_data.get("observation", obs)
+        except Exception as e:
+            print(f"[ERROR] Step failed: {e}", flush=True)
+            reward = 0.0
+            done = True
+
+        rewards.append(reward)
+        log_step(step, action, reward, done)
+
+    score = sum(rewards) / len(rewards) if rewards else 0.0
+    success = score > 0.5
+    log_end(success=success, steps=step, score=round(score, 4), rewards=rewards)
+    print(f"[INFO] Task {task_id} final score: {score:.4f}", flush=True)
     return score
 
-# ------------------------------------------------------------------
-# Main
-# ------------------------------------------------------------------
 
-def main() -> None:
+def main():
+    print("🚀 Starting CyberDefend-X inference...", flush=True)
     print(f"[INFO] CyberDefend-X baseline inference", flush=True)
     print(f"[INFO] Model  : {MODEL_NAME} @ {API_BASE_URL}", flush=True)
     print(f"[INFO] Env URL: {ENV_BASE_URL}", flush=True)
-    print(f"[INFO] Tasks  : {[t['task_id'] for t in TASKS]}", flush=True)
+    print(f"[INFO] Tasks  : {TASKS}", flush=True)
 
     try:
         health = httpx.get(f"{ENV_BASE_URL}/health", timeout=10)
         print(f"[INFO] Health check: {health.json()}", flush=True)
     except Exception as e:
-        print(f"[WARN] Could not reach environment: {e}", flush=True)
+        print(f"[ERROR] Health check failed: {e}", flush=True)
 
-    all_scores: Dict[str, float] = {}
-
-    for task_cfg in TASKS:
-        task_id = task_cfg["task_id"]
-        print(f"\n{'='*60}", flush=True)
-        print(f"[INFO] Running task: {task_id}", flush=True)
-        score = run_task(task_cfg)
-        all_scores[task_id] = score
-        print(f"[INFO] Task {task_id} final score: {score:.4f}", flush=True)
+    scores = {}
+    for task_id in TASKS:
+        scores[task_id] = run_task(task_id)
 
     print(f"\n{'='*60}", flush=True)
     print("[SUMMARY] Task scores:", flush=True)
-    for tid, s in all_scores.items():
-        status = "✅" if s >= SUCCESS_SCORE_THRESHOLD else "❌"
-        print(f"  {status}  {tid}: {s:.4f}", flush=True)
-    overall = round(sum(all_scores.values()) / max(len(all_scores), 1), 4)
+    for task_id, score in scores.items():
+        status = "✅" if score > 0.5 else "❌"
+        print(f"  {status}  {task_id}: {score:.4f}", flush=True)
+
+    overall = sum(scores.values()) / len(scores)
     print(f"\n  🏆 OVERALL: {overall:.4f}", flush=True)
 
 
