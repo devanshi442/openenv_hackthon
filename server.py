@@ -87,7 +87,7 @@ def _validate_task(task_id: str, scenario_index: int) -> None:
 # ------------------------------------------------------------------
 
 class ResetRequest(BaseModel):
-    task_id: str = "alert_prioritization"
+    task_id: int = 0
     scenario_index: int = 0
 
 
@@ -108,7 +108,10 @@ def health():
 
 
 @app.post("/reset", response_model=ResetResult)
-def reset(req: ResetRequest):
+def reset(req: ResetRequest = None):
+    if req is None:
+        req = ResetRequest()
+
     _validate_task(req.task_id, req.scenario_index)
     try:
         env = _get_env(req.task_id, req.scenario_index)
@@ -119,7 +122,9 @@ def reset(req: ResetRequest):
 
 
 @app.post("/step", response_model=StepResult)
-def step(req: StepRequest):
+def step(req: StepRequest = None ):
+    if req is None:
+        req = StepRequest()
     _validate_task(req.task_id, req.scenario_index)
     env = _get_env(req.task_id, req.scenario_index)
     if env._current_obs is None:
