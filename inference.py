@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 
 import httpx
@@ -33,6 +34,9 @@ MAX_STEPS = {"alert_prioritization": 1, "threat_detection": 1, "incident_respons
 
 
 def log_start(task: str, env: str, model: str):
+    # Plain text format (required by evaluator)
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+    # JSON format (for compatibility)
     print(json.dumps({
         "type": "START",
         "task": task,
@@ -40,9 +44,13 @@ def log_start(task: str, env: str, model: str):
         "model": model,
         "timestamp": time.time(),
     }), flush=True)
+    sys.stdout.flush()
 
 
 def log_step(step: int, action, reward: float, done: bool, error=None):
+    # Plain text format (required by evaluator)
+    print(f"[STEP] step={step} reward={reward} done={done}", flush=True)
+    # JSON format (for compatibility)
     print(json.dumps({
         "type": "STEP",
         "step": step,
@@ -52,9 +60,13 @@ def log_step(step: int, action, reward: float, done: bool, error=None):
         "error": error,
         "timestamp": time.time(),
     }), flush=True)
+    sys.stdout.flush()
 
 
 def log_end(success: bool, steps: int, score: float, rewards: list):
+    # Plain text format (required by evaluator)
+    print(f"[END] success={success} steps={steps} score={score}", flush=True)
+    # JSON format (for compatibility)
     print(json.dumps({
         "type": "END",
         "success": success,
@@ -63,6 +75,7 @@ def log_end(success: bool, steps: int, score: float, rewards: list):
         "rewards": rewards,
         "timestamp": time.time(),
     }), flush=True)
+    sys.stdout.flush()
 
 
 def call_llm(system_prompt: str, user_prompt: str):
@@ -105,35 +118,16 @@ def get_action_for_task(task_id: str, observation: dict):
     if task_id == "alert_prioritization":
         alerts = observation.get("alerts", [])
         alert_list = "\n".join([f"- [{i}] {a['alert']}" for i, a in enumerate(alerts)])
-        system = """You are an expert SOC analyst with 10+ years of experience triaging security alerts.
-Your job is to identify which alerts are genuinely HIGH priority and require immediate action.
+        system = """You are an expert SOC analyst. Identify HIGH priority alerts that need immediate action.
 
-HIGH priority alerts include:
-- Data exfiltration attempts (large data transfers to external IPs)
-- Unauthorized admin/privileged access or login anomalies  
-- Active intrusion indicators (port scans on critical systems, lateral movement)
-- Multiple failed authentication attempts suggesting brute force
-- Malware or ransomware indicators
-- Privilege escalation attempts
+HIGH priority: data exfiltration, unauthorized admin access, port scans on critical systems, brute force attacks, malware, privilege escalation.
+LOW priority: single failed logins, routine traffic, non-critical warnings.
 
-LOW priority alerts include:
-- Single failed logins
-- Routine network traffic
-- Non-critical system warnings
-
-CRITICAL: Return ONLY a valid JSON array of the exact alert strings that are high priority.
+Return ONLY a valid JSON array of exact high-priority alert strings.
 Example: ["Alert text 1", "Alert text 2"]
 No explanation. No markdown. Just the JSON array."""
 
-        user = f"""Analyze these security alerts and return ALL HIGH priority ones:
-
-{alert_list}
-
-Full observation:
-{obs_str}
-
-Return ONLY a JSON array of high-priority alert strings."""
-
+        user = f"""Alerts:\n{alert_list}\n\nFull observation:\n{obs_str}\n\nReturn JSON array of high-priority alert strings."""
         result = call_llm(system, user)
         parsed = parse_json(result)
         if isinstance(parsed, list):
@@ -141,31 +135,16 @@ Return ONLY a JSON array of high-priority alert strings."""
         return [a["alert"] for a in alerts if a.get("true_severity", 0) >= 0.3]
 
     elif task_id == "threat_detection":
-        system = """You are a senior threat intelligence analyst specializing in attack pattern recognition.
+        system = """You are a threat intelligence analyst. Identify the attack pattern from logs.
 
-Common attack patterns:
-- Brute Force: Many failed logins followed by success
-- Privilege Escalation: sudo/su usage, new admin accounts created
-- Lateral Movement: connections between internal hosts
-- Data Exfiltration: large outbound transfers, DNS tunneling
-- Persistence: new scheduled tasks, backdoor accounts
-- Command & Control: beaconing traffic, unusual outbound connections
-- Ransomware: mass file encryption, shadow copy deletion
-- SQL Injection: unusual database queries in web logs
+Return ONLY valid JSON with:
+- "attack_type": specific attack name (e.g. "Brute Force + Privilege Escalation")
+- "signals": list of 3-5 evidence strings from logs
 
-CRITICAL: Return ONLY valid JSON with exactly these two keys:
-- "attack_type": A specific descriptive name (e.g. "Brute Force + Privilege Escalation")
-- "signals": A list of 3-5 specific evidence strings from the logs
+Example: {"attack_type": "Brute Force + Privilege Escalation", "signals": ["20 failed logins", "sudo su root", "new admin account"]}
+No explanation. No markdown. Just JSON."""
 
-Example: {"attack_type": "Credential Stuffing + Data Exfiltration", "signals": ["500 failed logins", "successful login from TOR IP", "200MB transfer to external IP"]}
-No explanation. No markdown. Just the JSON."""
-
-        user = f"""Analyze these security logs and identify the attack:
-
-{obs_str}
-
-Return JSON with attack_type and signals."""
-
+        user = f"""Analyze logs and identify the attack:\n{obs_str}\n\nReturn JSON with attack_type and signals."""
         result = call_llm(system, user)
         parsed = parse_json(result)
         if isinstance(parsed, dict) and "attack_type" in parsed and "signals" in parsed:
@@ -177,41 +156,25 @@ Return JSON with attack_type and signals."""
         step_num = observation.get("step", 0)
         context = observation.get("context", {})
 
-        system = """You are an elite incident responder following a structured IR playbook.
+        system = """You are an incident responder. Choose the best next IR action.
 
-Available actions and when to use them:
-- "kill_process": FIRST - stop active malicious process
-- "isolate_system": EARLY - prevent lateral movement  
-- "block_ip": stop C2 communication or exfiltration
-- "collect_forensics": gather evidence before remediation
-- "escalate_to_management": when severity is HIGH or needs business decision
-- "alert_soc": notify team and coordinate response
-- "patch_vulnerability": after containment, fix root cause
-- "restore_system": LAST - recovery after full eradication
+Actions: kill_process, isolate_system, block_ip, collect_forensics, escalate_to_management, alert_soc, patch_vulnerability, restore_system
 
-Optimal IR sequence: kill_process → isolate_system → block_ip → escalate_to_management → restore_system
+Optimal sequence: kill_process → isolate_system → block_ip → escalate_to_management → restore_system
 
-CRITICAL: Return ONLY valid JSON with key "action".
-Example: {"action": "isolate_system"}
-No explanation. No markdown. Just the JSON."""
+Return ONLY valid JSON: {"action": "action_name"}
+No explanation. No markdown. Just JSON."""
 
-        user = f"""Current incident state (Step {step_num + 1}):
-
-Context: {json.dumps(context, indent=2)}
-Recent logs: {json.dumps(logs[-5:] if logs else [], indent=2)}
-
-What is the single BEST next action? Return JSON with key "action"."""
-
+        user = f"""Step {step_num+1}. Context: {json.dumps(context)}. Recent logs: {json.dumps(logs[-3:] if logs else [])}.\n\nBest next action? Return JSON with key "action"."""
         result = call_llm(system, user)
         parsed = parse_json(result)
         if isinstance(parsed, dict) and "action" in parsed:
-            valid_actions = ["kill_process", "isolate_system", "block_ip",
-                           "escalate_to_management", "alert_soc", "restore_system",
-                           "collect_forensics", "patch_vulnerability"]
-            if parsed["action"] in valid_actions:
+            valid = ["kill_process","isolate_system","block_ip","escalate_to_management",
+                     "alert_soc","restore_system","collect_forensics","patch_vulnerability"]
+            if parsed["action"] in valid:
                 return parsed
-        fallback_sequence = ["kill_process", "isolate_system", "block_ip", "escalate_to_management"]
-        return {"action": fallback_sequence[min(step_num, len(fallback_sequence)-1)]}
+        fallback = ["kill_process","isolate_system","block_ip","escalate_to_management"]
+        return {"action": fallback[min(step_num, len(fallback)-1)]}
 
     return {}
 
@@ -219,6 +182,7 @@ What is the single BEST next action? Return JSON with key "action"."""
 def run_task(task_id: str) -> float:
     print(f"\n{'='*60}", flush=True)
     print(f"[INFO] Running task: {task_id}", flush=True)
+    sys.stdout.flush()
 
     log_start(task=task_id, env="CyberDefend-X", model=MODEL_NAME)
 
@@ -242,9 +206,7 @@ def run_task(task_id: str) -> float:
     for step in range(1, max_steps + 1):
         if done:
             break
-
         action = get_action_for_task(task_id, obs)
-
         try:
             r = httpx.post(f"{ENV_BASE_URL}/step",
                            json={"task_id": task_id, "scenario_index": 0, "action": action},
@@ -265,15 +227,16 @@ def run_task(task_id: str) -> float:
     success = score > 0.5
     log_end(success=success, steps=step, score=round(score, 4), rewards=rewards)
     print(f"[INFO] Task {task_id} final score: {score:.4f}", flush=True)
+    sys.stdout.flush()
     return score
 
 
 def main():
     print("🚀 Starting CyberDefend-X inference...", flush=True)
-    print(f"[INFO] CyberDefend-X baseline inference", flush=True)
     print(f"[INFO] Model  : {MODEL_NAME} @ {API_BASE_URL}", flush=True)
     print(f"[INFO] Env URL: {ENV_BASE_URL}", flush=True)
     print(f"[INFO] Tasks  : {TASKS}", flush=True)
+    sys.stdout.flush()
 
     try:
         health = httpx.get(f"{ENV_BASE_URL}/health", timeout=10)
@@ -293,6 +256,7 @@ def main():
 
     overall = sum(scores.values()) / len(scores)
     print(f"\n  🏆 OVERALL: {overall:.4f}", flush=True)
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":
