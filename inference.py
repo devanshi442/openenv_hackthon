@@ -156,11 +156,24 @@ No explanation. No markdown. Just JSON."""
         step_num = observation.get("step", 0)
         context = observation.get("context", {})
 
-        system = """You are an incident responder. Choose the best next IR action.
+        system = """You are an expert incident responder. Read the current log and pick the best action.
 
-Actions: kill_process, isolate_system, block_ip, collect_forensics, escalate_to_management, alert_soc, patch_vulnerability, restore_system
+Decision guide:
+- Active malware/ransomware process running: kill_process
+- Lateral spread detected, multiple hosts infected: isolate_system
+- C2 domain resolving, attacker may re-enter: block_ip
+- Compromised credentials, account takeover: reset_credentials
+- Need to alert team about new threat: alert_soc
+- Incident contained, need evidence or documentation: collect_forensics
+- Need stakeholder notification after containment: escalate_to_management
+- System needs patching: patch_system
 
-Optimal sequence: kill_process → isolate_system → block_ip → escalate_to_management → restore_system
+Return ONLY valid JSON: {"action": "action_name"}
+No markdown. No explanation. Just JSON.
+
+Valid actions: alert_soc, block_ip, isolate_system, kill_process, reset_credentials, collect_forensics, escalate_to_management, patch_system, restore_backup, do_nothing
+
+
 
 Return ONLY valid JSON: {"action": "action_name"}
 No explanation. No markdown. Just JSON."""
