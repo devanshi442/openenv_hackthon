@@ -146,7 +146,7 @@ def compute_step_reward(
         feedback_parts.append("🧠 Good reasoning!")
 
     # Cap total at 0.0 minimum; explainability cannot compensate a destructive penalty below 0
-    total = round(max(action_score + explainability_bonus, 0.0), 4)
+    total = round(min(max(action_score + explainability_bonus, 0.001), 0.999), 4)
     return total, breakdown, " ".join(feedback_parts)
 
 

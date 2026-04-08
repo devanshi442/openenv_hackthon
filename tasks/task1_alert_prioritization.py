@@ -126,7 +126,7 @@ def compute_reward(
     if tau == 1.0:
         feedback_parts.append("🏆 Perfect ranking!")
 
-    total = round(min(sum(breakdown.values()), 1.0), 4)
+    total = round(min(max(sum(breakdown.values()), 0.001), 0.999), 4)
     return total, breakdown, " ".join(feedback_parts)
 
 
