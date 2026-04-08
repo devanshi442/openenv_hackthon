@@ -1,0 +1,37 @@
+name: cyberdefend-x
+version: "1.0.0"
+description: >
+  CyberDefend-X: SOC Decision Intelligence Environment.
+  An AI agent acts as a Security Operations Center (SOC) analyst,
+  performing real-world cybersecurity tasks including alert prioritization,
+  multi-signal threat detection, and sequential incident response.
+author: Devanshi Saxena
+tags:
+  - cybersecurity
+  - soc
+  - threat-detection
+  - incident-response
+  - openenv
+tasks:
+  - id: alert_prioritization
+    name: Alert Prioritization
+    difficulty: easy
+    description: >
+      Rank incoming security alerts by true severity score using SOC analyst judgment.
+  - id: threat_detection
+    name: Multi-Signal Threat Detection
+    difficulty: medium
+    description: >
+      Classify the attack type from multiple correlated log signals.
+  - id: incident_response
+    name: Sequential Incident Response
+    difficulty: hard
+    description: >
+      Take optimal sequential containment actions against an evolving intrusion scenario.
+observation_space:
+  type: object
+  description: Current environment state including logs, alerts, and context
+action_space:
+  type: object
+  description: Agent action with action field and mandatory reason field
+reward_range: [0.0, 1.0]
