@@ -12,26 +12,148 @@ tags:
   - threat-detection
   - incident-response
   - openenv
+
 tasks:
   - id: alert_prioritization
     name: Alert Prioritization
     difficulty: easy
+    max_steps: 1
     description: >
       Rank incoming security alerts by true severity score using SOC analyst judgment.
+      Graded by Kendall Tau correlation between predicted and true ranking.
+    reward_range: [0.0, 1.0]
+    observation_space:
+      type: object
+      properties:
+        task_id: { type: string }
+        step: { type: integer }
+        alerts: { type: array, items: { type: object } }
+        instructions: { type: string }
+        history: { type: array }
+        done: { type: boolean }
+    action_space:
+      type: object
+      properties:
+        action:
+          type: array
+          description: Ordered list of alert strings (most critical first)
+        reason:
+          type: string
+          description: Mandatory explanation for prioritization
+
   - id: threat_detection
     name: Multi-Signal Threat Detection
     difficulty: medium
+    max_steps: 1
     description: >
       Classify the attack type from multiple correlated log signals.
+      Graded by exact/partial classification match and signal coverage.
+    reward_range: [0.0, 1.0]
+    observation_space:
+      type: object
+      properties:
+        task_id: { type: string }
+        step: { type: integer }
+        logs: { type: array, items: { type: string } }
+        instructions: { type: string }
+        history: { type: array }
+        done: { type: boolean }
+    action_space:
+      type: object
+      properties:
+        action:
+          type: object
+          properties:
+            attack_type: { type: string }
+            signals: { type: array, items: { type: string } }
+        reason:
+          type: string
+          description: Mandatory explanation for classification
+
   - id: incident_response
     name: Sequential Incident Response
     difficulty: hard
+    max_steps: 4
     description: >
-      Take optimal sequential containment actions against an evolving intrusion scenario.
+      Take optimal sequential containment actions against an evolving intrusion scenario
+      over 4 turns. Graded per-step with explainability bonus.
+    reward_range: [0.0, 1.0]
+    observation_space:
+      type: object
+      properties:
+        task_id: { type: string }
+        step: { type: integer }
+        logs: { type: array, items: { type: string } }
+        context:
+          type: object
+          properties:
+            valid_actions: { type: array, items: { type: string } }
+            cumulative_reward: { type: number }
+        instructions: { type: string }
+        history: { type: array }
+        done: { type: boolean }
+    action_space:
+      type: object
+      properties:
+        action:
+          type: object
+          properties:
+            action:
+              type: string
+              enum:
+                - alert_soc
+                - block_ip
+                - isolate_system
+                - kill_process
+                - reset_credentials
+                - collect_forensics
+                - escalate_to_management
+                - patch_system
+                - restore_backup
+                - do_nothing
+        reason:
+          type: string
+          description: Mandatory explanation for action choice
+
 observation_space:
   type: object
-  description: Current environment state including logs, alerts, and context
+  description: Current environment state including logs, alerts, instructions, and history
+
 action_space:
   type: object
-  description: Agent action with action field and mandatory reason field
+  description: Agent action with task-specific payload and mandatory reason field
+  properties:
+    action:
+      description: Task-specific payload — list (T1), object (T2/T3)
+    reason:
+      type: string
+      description: Explanation for the chosen action (required for explainability bonus)
+
 reward_range: [0.0, 1.0]
+
+endpoints:
+  reset:
+    method: POST
+    path: /reset
+    description: Resets the environment and returns initial observation
+  step:
+    method: POST
+    path: /step
+    description: Submits an action, returns (observation, reward, done, info)
+  state:
+    method: GET
+    path: /state
+    description: Returns current observation without advancing the environment
+  health:
+    method: GET
+    path: /health
+    description: Health check endpoint
+  tasks:
+    method: GET
+    path: /tasks
+    description: Lists all available tasks with metadata
+
+deployment:
+  platform: huggingface_spaces
+  sdk: docker
+  port: 7860
