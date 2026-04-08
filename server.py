@@ -87,7 +87,7 @@ def _validate_task(task_id: str, scenario_index: int) -> None:
 # ------------------------------------------------------------------
 
 class ResetRequest(BaseModel):
-    task_id: int = 0
+    task_id: str = "alert_prioritization"
     scenario_index: int = 0
 
 
